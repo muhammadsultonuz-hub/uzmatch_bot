@@ -257,62 +257,49 @@ async def search_profiles(message: types.Message):
     if not candidate:
         await message.answer("Hozircha bazada boshqa anketalar yo'q. 😔")
         return
-        
+
     cand_id, name, age, city, gender, bio, photo = candidate
-    caption = f"👤 {name}, {age} yosh, {city} 📍\n{gender}\n\n📝 {bio}\n\n🆔_ID:{cand_id}"
+    caption = f"👤 {name}, {age} yosh, {city} 📍\n{gender}\n\n📝 {bio}"
     
-    await message.answer_photo(photo=photo, caption=caption, reply_markup=search_keyboard)
-
-
-
-
-
-# --- "❤️ Yoqdi" bosilganda ---
-# --- "❤️ Yoqdi" bosilganda o'zaro moslashuvni tekshirish ---
-@dp.message(F.text == "❤️ Yoqdi")
-async def process_like_text(message: types.Message, bot: Bot):
-    user_id = message.from_user.id
+    # Inline tugmalar yaratamiz
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❤️ Yoqdi", callback_data=f"like_{cand_id}")
+    builder.button(text="👎 Yoqmadi", callback_data=f"dislike_{cand_id}")
+    builder.adjust(2)
     
-    if not message.reply_to_message or not message.reply_to_message.caption:
-        await message.answer("❤️")
-        await search_profiles(message)
-        return
+    await message.answer_photo(photo=photo, caption=caption, reply_markup=builder.as_markup())
 
-    caption = message.reply_to_message.caption
-    target_id = None
-    for line in caption.split("\n"):
-        if "🆔_ID:" in line:
-            try:
-                target_id = int(line.split("🆔_ID:")[1].strip())
-            except ValueError:
-                pass
 
-    if not target_id:
-        await message.answer("❤️")
-        await search_profiles(message)
-        return
 
+
+
+# --- Inline tugma orqali "❤️ Yoqdi" bosilganda ---
+@dp.callback_query(F.data.startswith("like_"))
+async def process_like_callback(callback: types.CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
+    target_id = int(callback.data.split("_")[1])
+    
+    await callback.message.delete()
+    
     conn = get_db()
     cursor = conn.cursor()
     
-    # Like ni bazaga saqlaymiz
     cursor.execute("SELECT * FROM likes WHERE user_id = ? AND target_id = ?", (user_id, target_id))
     if not cursor.fetchone():
         cursor.execute("INSERT INTO likes (user_id, target_id) VALUES (?, ?)", (user_id, target_id))
         conn.commit()
 
-    # Narigi odam ham oldin like bosganmi (Match)
     cursor.execute("SELECT * FROM likes WHERE user_id = ? AND target_id = ?", (target_id, user_id))
     mutual = cursor.fetchone()
     
-    cursor.execute("SELECT name, photo FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT name FROM users WHERE user_id = ?", (user_id,))
     my_data = cursor.fetchone()
     my_name = my_data[0] if my_data else "Foydalanuvchi"
 
     conn.close()
 
     if mutual:
-        await message.answer(f"🎉 O'zaro simpatiya! Sizga bu inson yoqdi.\n\nU bilan bog'lanish uchun havola: tg://user?id={target_id}")
+        await callback.message.answer(f"🎉 O'zaro simpatiya! Sizga bu inson yoqdi.\n\nU bilan bog'lanish uchun havola: tg://user?id={target_id}")
         try:
             await bot.send_message(
                 target_id, 
@@ -322,20 +309,24 @@ async def process_like_text(message: types.Message, bot: Bot):
         except Exception:
             pass
     else:
-        await message.answer("❤️")
+        await callback.message.answer("❤️")
 
-    await search_profiles(message)
-
-
-
+    callback.message.from_user = callback.from_user
+    await search_profiles(callback.message)
 
 
+# --- Inline tugma orqali "👎 Yoqmadi" bosilganda ---
+@dp.callback_query(F.data.startswith("dislike_"))
+async def process_dislike_callback(callback: types.CallbackQuery):
+    await callback.message.delete()
+    callback.message.from_user = callback.from_user
+    await search_profiles(callback.message)
+
+   
 
 
-# --- "👎 Yoqmadi" bosilganda ---
-@dp.message(F.text == "👎 Yoqmadi")
-async def process_dislike_text(message: types.Message):
-    await search_profiles(message)
+ 
+
 
 # --- "🔙 Orqaga" bosilganda ---
 @dp.message(F.text == "🔙 Orqaga")
