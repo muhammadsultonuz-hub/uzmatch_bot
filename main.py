@@ -230,49 +230,50 @@ async def start_search_cmd(message: types.Message):
     await search_profiles(message)
 async def search_profiles(message: types.Message):
     user_id = message.from_user.id
-    
     conn = get_db()
     cursor = conn.cursor()
-    
+
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN last_viewed_id INTEGER")
+        conn.commit()
+    except Exception:
+        pass
+
     cursor.execute("SELECT gender, city FROM users WHERE user_id = ?", (user_id,))
     my_profile = cursor.fetchone()
-    
+
     if not my_profile:
         conn.close()
         await message.answer("Oldin o'z anketangizni to'ldirishingiz kerak. /start ni bosing.")
         return
-        
+
     my_gender, my_city = my_profile
     target_gender = "Ayol 🚺" if my_gender == "Erkak 🚹" else "Erkak 🚹"
-    
+
     cursor.execute("""
-        SELECT user_id, name, age, city, gender, bio, photo 
-        FROM users 
+        SELECT user_id, name, age, city, gender, bio, photo
+        FROM users
         WHERE user_id != ? AND gender = ?
         ORDER BY RANDOM() LIMIT 1
     """, (user_id, target_gender))
-    
     candidate = cursor.fetchone()
-    
+
     if not candidate:
         cursor.execute("""
-            SELECT user_id, name, age, city, gender, bio, photo 
-            FROM users 
-            WHERE user_id != ? 
+            SELECT user_id, name, age, city, gender, bio, photo
+            FROM users
+            WHERE user_id != ?
             ORDER BY RANDOM() LIMIT 1
         """, (user_id,))
         candidate = cursor.fetchone()
-        
-    conn.close()
-        
+
     if not candidate:
+        conn.close()
         await message.answer("Hozircha bazada boshqa anketalar yo'q. 😔")
         return
 
     cand_id, name, age, city, gender, bio, photo = candidate
 
-    conn = get_db()
-    cursor = conn.cursor()
     cursor.execute("UPDATE users SET last_viewed_id = ? WHERE user_id = ?", (cand_id, user_id))
     conn.commit()
     conn.close()
@@ -284,6 +285,9 @@ async def search_profiles(message: types.Message):
 
     await message.answer_photo(photo=photo, caption=caption, reply_markup=inline_kb.as_markup())
 
+        
+   
+    
 
 
 
