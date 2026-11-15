@@ -214,9 +214,20 @@ search_keyboard = types.ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# --- Anketalarni qidirish ---
+
+
 @dp.message(F.text == "🔍 Anketalarni qidirish")
 @dp.message(Command("search"))
+async def start_search_cmd(message: types.Message):
+    reply_kb = types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="❤️"), types.KeyboardButton(text="👎")],
+            [types.KeyboardButton(text="🔙 Orqaga")]
+        ],
+        resize_keyboard=True
+    )
+    await message.answer("🔍 Qidiruv boshlandi:", reply_markup=reply_kb)
+    await search_profiles(message)
 async def search_profiles(message: types.Message):
     user_id = message.from_user.id
     
@@ -259,105 +270,86 @@ async def search_profiles(message: types.Message):
         return
 
     cand_id, name, age, city, gender, bio, photo = candidate
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET last_viewed_id = ? WHERE user_id = ?", (cand_id, user_id))
+    conn.commit()
+    conn.close()
+
     caption = f"👤 {name}, {age} yosh, {city} 📍\n{gender}\n\n📝 {bio}"
-    
-    # Inline tugmalar yaratamiz
-    builder = InlineKeyboardBuilder()
-    builder.button(text="❤️ Yoqdi", callback_data=f"like_{cand_id}")
-    builder.button(text="👎 Yoqmadi", callback_data=f"dislike_{cand_id}")
-    builder.adjust(2)
-    
-    await message.answer_photo(photo=photo, caption=caption, reply_markup=builder.as_markup())
+
+    inline_kb = InlineKeyboardBuilder()
+    inline_kb.button(text="💬 Shaxsiy chatga kirish uchun havola", callback_data=f"chat_link_{cand_id}")
+
+    await message.answer_photo(photo=photo, caption=caption, reply_markup=inline_kb.as_markup())
 
 
 
 
+# --- Anketa ostidagi havola tugmasi bosilganda ---
+@dp.callback_query(F.data.startswith("chat_link_"))
+async def process_chat_link_alert(callback: types.CallbackQuery):
+    await callback.answer("🔒 Shaxsiy chatga kirish uchun o'zaro Match bo'lishi kerak!", show_alert=True)
 
-
-
-# --- Inline tugma orqali "❤️ Yoqdi" bosilganda ---
-@dp.callback_query(F.data.startswith("like_"))
-async def process_like_callback(callback: types.CallbackQuery, bot: Bot):
-    user_id = callback.from_user.id
-    target_id = int(callback.data.split("_")[1])
-    
-    # Xabarni o'chirmaymiz, faqat pastidagi tugmalarni olib tashlaymiz
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    
+# --- Pastdan "❤️" bosilganda ---
+@dp.message(F.text == "❤️")
+async def process_heart_like(message: types.Message, bot: Bot):
+    user_id = message.from_user.id
     conn = get_db()
     cursor = conn.cursor()
     
-    # 1. Like ni bazaga saqlaymiz
+    cursor.execute("SELECT last_viewed_id FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    
+    if not row or not row[0]:
+        conn.close()
+        await search_profiles(message)
+        return
+        
+    target_id = row[0]
+    
     cursor.execute("SELECT * FROM likes WHERE user_id = ? AND target_id = ?", (user_id, target_id))
     if not cursor.fetchone():
         cursor.execute("INSERT INTO likes (user_id, target_id) VALUES (?, ?)", (user_id, target_id))
         conn.commit()
 
-    # 2. Narigi odam ham oldin like bosganmi tekshiramiz (Match)
     cursor.execute("SELECT * FROM likes WHERE user_id = ? AND target_id = ?", (target_id, user_id))
     mutual = cursor.fetchone()
-    
-    cursor.execute("SELECT name FROM users WHERE user_id = ?", (user_id,))
-    my_data = cursor.fetchone()
-    my_name = my_data[0] if my_data else "Foydalanuvchi"
-
-    cursor.execute("SELECT name FROM users WHERE user_id = ?", (target_id,))
-    target_data = cursor.fetchone()
-    target_name = target_data[0] if target_data else "Foydalanuvchi"
-
     conn.close()
 
     if mutual:
-        # --- SARA MATCH DIZAYNIDAGI MATCH XABARI ---
         match_text = (
             "<b>🔥 Match!</b>\n\n"
             "❤️ <b>Siz bir-biringizga yoqdingiz</b>\n\n"
             "⚠️ <i>Eslatma: administratsiya foydalanuvchilarning keyingi harakatlari uchun javobgar emas. "
             "Bot faqat tanishuv va nikoh maqsadida yaratilgan.</i>"
         )
-        
-        # O'zimizga chiqadigan tugma (narigi odamning profiliga o'tish uchun)
         builder_my = InlineKeyboardBuilder()
         builder_my.button(text="👤 Profil", url=f"tg://user?id={target_id}")
         
-        # Narigi odamga keladigan tugma (bizning profilimizga o'tish uchun)
         builder_target = InlineKeyboardBuilder()
         builder_target.button(text="👤 Profil", url=f"tg://user?id={user_id}")
 
-        # O'zimizga yuboramiz
-        await callback.message.answer(match_text, reply_markup=builder_my.as_markup(), parse_mode="HTML")
-        
-        # Narigi odamga yuboramiz
+        await message.answer(match_text, reply_markup=builder_my.as_markup(), parse_mode="HTML")
         try:
-            await bot.send_message(
-                target_id, 
-                match_text,
-                reply_markup=builder_target.as_markup(),
-                parse_mode="HTML"
-            )
+            await bot.send_message(target_id, match_text, reply_markup=builder_target.as_markup(), parse_mode="HTML")
         except Exception:
             pass
-    else:
-        await callback.answer("❤️")
 
-    # Keyingi nomzodni chiqarish
-    callback.message.from_user = callback.from_user
-    await search_profiles(callback.message)
+    await search_profiles(message)
 
+# --- Pastdan "👎" bosilganda ---
+@dp.message(F.text == "👎")
+async def process_thumb_dislike(message: types.Message):
+    await search_profiles(message)
 
-# --- Inline tugma orqali "👎 Yoqmadi" bosilganda ---
-@dp.callback_query(F.data.startswith("dislike_"))
-async def process_dislike_callback(callback: types.CallbackQuery):
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    
+    
         
-    callback.message.from_user = callback.from_user
-    await search_profiles(callback.message)
+       
+
+
 
    
 
