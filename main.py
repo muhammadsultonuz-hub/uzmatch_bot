@@ -300,6 +300,38 @@ async def web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
+
+
+# --- Bazani avtomatik yaratish funksiyasi ---
+def init_db():
+    conn = sqlite3.connect("dating_bot.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            name TEXT,
+            age INTEGER,
+            city TEXT,
+            gender TEXT,
+            bio TEXT,
+            photo TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS likes (
+            user_id INTEGER,
+            target_id INTEGER
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# Bot ishga tushishidan oldin bazani yaratib qo'yamiz
+init_db()
+
+
+
+
 # --- Asosiy ishga tushirish funksiyasi ---
 async def main():
     # 1. Web-serverni ishga tushiramiz (Render port talabini qondirish uchun)
