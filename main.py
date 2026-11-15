@@ -263,11 +263,74 @@ async def search_profiles(message: types.Message):
     
     await message.answer_photo(photo=photo, caption=caption, reply_markup=search_keyboard)
 
+
+
+
+
 # --- "❤️ Yoqdi" bosilganda ---
+# --- "❤️ Yoqdi" bosilganda o'zaro moslashuvni tekshirish ---
 @dp.message(F.text == "❤️ Yoqdi")
-async def process_like_text(message: types.Message):
-    await message.answer("❤️")
+async def process_like_text(message: types.Message, bot: Bot):
+    user_id = message.from_user.id
+    
+    if not message.reply_to_message or not message.reply_to_message.caption:
+        await message.answer("❤️")
+        await search_profiles(message)
+        return
+
+    caption = message.reply_to_message.caption
+    target_id = None
+    for line in caption.split("\n"):
+        if "🆔_ID:" in line:
+            try:
+                target_id = int(line.split("🆔_ID:")[1].strip())
+            except ValueError:
+                pass
+
+    if not target_id:
+        await message.answer("❤️")
+        await search_profiles(message)
+        return
+
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Like ni bazaga saqlaymiz
+    cursor.execute("SELECT * FROM likes WHERE user_id = ? AND target_id = ?", (user_id, target_id))
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO likes (user_id, target_id) VALUES (?, ?)", (user_id, target_id))
+        conn.commit()
+
+    # Narigi odam ham oldin like bosganmi (Match)
+    cursor.execute("SELECT * FROM likes WHERE user_id = ? AND target_id = ?", (target_id, user_id))
+    mutual = cursor.fetchone()
+    
+    cursor.execute("SELECT name, photo FROM users WHERE user_id = ?", (user_id,))
+    my_data = cursor.fetchone()
+    my_name = my_data[0] if my_data else "Foydalanuvchi"
+
+    conn.close()
+
+    if mutual:
+        await message.answer(f"🎉 O'zaro simpatiya! Sizga bu inson yoqdi.\n\nU bilan bog'lanish uchun havola: tg://user?id={target_id}")
+        try:
+            await bot.send_message(
+                target_id, 
+                f"🎉 O'zaro simpatiya! <b>{my_name}</b> ham sizga like bosdi.\n\nU bilan bog'lanish uchun havola: tg://user?id={user_id}",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    else:
+        await message.answer("❤️")
+
     await search_profiles(message)
+
+
+
+
+
+
 
 # --- "👎 Yoqmadi" bosilganda ---
 @dp.message(F.text == "👎 Yoqmadi")
