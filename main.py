@@ -65,6 +65,18 @@ def init_db():
 
 init_db()
 
+# Asosiy menyu klaviaturasi
+def get_main_keyboard():
+    return types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="🔍 Anketalarni qidirish")],
+            [types.KeyboardButton(text="❤️ Meni yoqtirganlar")],
+            [types.KeyboardButton(text="👤 Mening anketam"), types.KeyboardButton(text="🗑 Anketani o'chirish")],
+            [types.KeyboardButton(text="👑 VIP status olish")]
+        ],
+        resize_keyboard=True
+    )
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     conn = get_db()
@@ -74,15 +86,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     conn.close()
     
     if user:
-        keyboard = types.ReplyKeyboardMarkup(
-            keyboard=[
-                [types.KeyboardButton(text="🔍 Anketalarni qidirish")],
-                [types.KeyboardButton(text="👤 Mening anketam"), types.KeyboardButton(text="🗑 Anketani o'chirish")],
-                [types.KeyboardButton(text="👑 VIP status olish")]
-            ],
-            resize_keyboard=True
-        )
-        await message.answer("Siz ro'yxatdan o'tgansiz! Quyidagi tugmalardan birini tanlang:", reply_markup=keyboard)
+        await message.answer("Siz ro'yxatdan o'tgansiz! Quyidagi tugmalardan birini tanlang:", reply_markup=get_main_keyboard())
     else:
         builder = InlineKeyboardBuilder()
         builder.button(text="❌ Bekor qilish", callback_data="cancel_reg")
@@ -236,15 +240,7 @@ async def process_bio(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
     
-    keyboard = types.ReplyKeyboardMarkup(
-        keyboard=[
-            [types.KeyboardButton(text="🔍 Anketalarni qidirish")],
-            [types.KeyboardButton(text="👤 Mening anketam"), types.KeyboardButton(text="🗑 Anketani o'chirish")],
-            [types.KeyboardButton(text="👑 VIP status olish")]
-        ],
-        resize_keyboard=True
-    )
-    await message.answer("✅ Anketangiz muvaffaqiyatli saqlandi!", reply_markup=keyboard)
+    await message.answer("✅ Anketangiz muvaffaqiyatli saqlandi!", reply_markup=get_main_keyboard())
     await state.clear()
 
 # --- VIP obuna va Payme to'lov qismi ---
@@ -262,7 +258,7 @@ async def show_vip_tariffs(message: types.Message):
     text = (
         "👑 **VIP status imkoniyatlari:**\n\n"
         "• Shaxsiy chatlarni ochish\n"
-        "• Profilingiz tezroq tavsiya etiladi\n"
+        "• Kimlar sizni yoqtirganini ko'rish\n"
         "• Cheksiz qidiruv imkoniyati\n\n"
         "O'zingizga mos tarifni tanlang va Payme orqali to'lang:"
     )
@@ -298,6 +294,59 @@ async def process_buy_vip(callback: types.CallbackQuery):
         parse_mode="Markdown"
     )
     await callback.answer()
+
+# --- Meni yoqtirganlar bo'limi ---
+@dp.message(F.text == "❤️ Meni yoqtirganlar")
+async def show_who_liked_me(message: types.Message):
+    user_id = message.from_user.id
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT vip_expires FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    
+    is_vip = False
+    if row and row[0]:
+        try:
+            exp_date = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+            if exp_date > datetime.now():
+                is_vip = True
+        except Exception:
+            pass
+            
+    if not is_vip:
+        conn.close()
+        builder = InlineKeyboardBuilder()
+        builder.button(text="👑 VIP status olish", callback_data="buy_vip_menu")
+        await message.answer(
+            "🔒 **Diqqat!** Sizga kimlar layk bosganini ko'rish uchun **VIP status** talab etiladi.\n\n"
+            "VIP statusni oling va o'zingizga yoqlarini darhol toping:",
+            reply_markup=builder.as_markup(),
+            parse_mode="Markdown"
+        )
+        return
+
+    cursor.execute("""
+        SELECT u.user_id, u.name, u.age, u.city, u.gender, u.bio, u.photo
+        FROM likes l
+        JOIN users u ON l.user_id = u.user_id
+        WHERE l.target_id = ?
+        ORDER BY l.rowid DESC LIMIT 1
+    """, (user_id,))
+    fan = cursor.fetchone()
+    conn.close()
+
+    if not fan:
+        await message.answer("Hozircha sizga hech kim layk bosmagan. Qidiruvni davom eting! 🔍")
+        return
+
+    f_id, name, age, city, gender, bio, photo = fan
+    caption = f"💖 **Sizga bu inson yoqdi!**\n\n👤 {name}, {age} yosh, {city} 📍\n{gender}\n\n📝 {bio}"
+
+    inline_kb = InlineKeyboardBuilder()
+    inline_kb.button(text="💬 Chatga o'tish", url=f"tg://user?id={f_id}")
+
+    await message.answer_photo(photo=photo, caption=caption, reply_markup=inline_kb.as_markup(), parse_mode="Markdown")
 
 # --- Qidirish menyusi ---
 @dp.message(F.text == "🔍 Anketalarni qidirish")
@@ -386,16 +435,14 @@ async def process_chat_link(callback: types.CallbackQuery):
             pass
             
     if is_vip:
-        # VIP faol bo'lsa to'g'ridan-to'g'ri profildagi chat havolasini ochamiz
         builder = InlineKeyboardBuilder()
         builder.button(text="💬 Chatga o'tish", url=f"tg://user?id={target_id}")
         await callback.message.answer("✨ Sizda VIP status mavjud! Marhamat, chatga o'ting:", reply_markup=builder.as_markup())
         await callback.answer()
     else:
-        # VIP faol bo'lmasa xabar va sotib olish tugmasini chiqaramiz
+        await callback.answer("🔒 Chatni ochish uchun VIP status olishingiz kerak!", show_alert=True)
         builder = InlineKeyboardBuilder()
         builder.button(text="👑 VIP status olish", callback_data="buy_vip_menu")
-        await callback.answer("🔒 Chatni ochish uchun VIP status olishingiz kerak!", show_alert=True)
         await callback.message.answer(
             "🔒 **Diqqat!** Shaxsiy chatga kirish va boshqalar bilan muloqot qilish uchun **VIP status** talab etiladi.\n\n"
             "VIP statusni sotib oling va barcha cheklovlarni olib tashlang:",
@@ -405,13 +452,8 @@ async def process_chat_link(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "buy_vip_menu")
 async def process_buy_vip_menu(callback: types.CallbackQuery):
-    # Xabarni o'chirmasdan, uning ostiga tariflarni chiqarib yuboramiz
     await show_vip_tariffs(callback.message)
     await callback.answer()
-
-
-
-    
 
 # --- Pastdan "❤️" bosilganda ---
 @dp.message(F.text == "❤️")
@@ -447,15 +489,7 @@ async def process_thumb_dislike(message: types.Message):
 # --- "🔙 Orqaga" bosilganda ---
 @dp.message(F.text == "🔙 Orqaga")
 async def process_back_text(message: types.Message):
-    keyboard = types.ReplyKeyboardMarkup(
-        keyboard=[
-            [types.KeyboardButton(text="🔍 Anketalarni qidirish")],
-            [types.KeyboardButton(text="👤 Mening anketam"), types.KeyboardButton(text="🗑 Anketani o'chirish")],
-            [types.KeyboardButton(text="👑 VIP status olish")]
-        ],
-        resize_keyboard=True
-    )
-    await message.answer("Asosiy menyu:", reply_markup=keyboard)
+    await message.answer("Asosiy menyu:", reply_markup=get_main_keyboard())
 
 # --- Render uchun mini web-server va Payme Webhook ---
 async def handle(request):
