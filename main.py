@@ -405,9 +405,13 @@ async def process_chat_link(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "buy_vip_menu")
 async def process_buy_vip_menu(callback: types.CallbackQuery):
-    await callback.message.delete()
+    # Xabarni o'chirmasdan, uning ostiga tariflarni chiqarib yuboramiz
     await show_vip_tariffs(callback.message)
     await callback.answer()
+
+
+
+    
 
 # --- Pastdan "❤️" bosilganda ---
 @dp.message(F.text == "❤️")
