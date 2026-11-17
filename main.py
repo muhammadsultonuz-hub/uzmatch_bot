@@ -14,6 +14,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 
 TOKEN = "8938707382:AAGA_7nLTPwpkXA7_kcg0cbIo2gnAy7-QFQ"
 PAYME_MERCHANT_ID = "SIZNING_PAYME_MERCHANT_ID"  # Hisob raqam tayyor bo'lgach haqiqiy ID yoziladi
+ADMIN_ID = 5985235760  # O'zingizning Telegram ID raqamingizni yozing (Admin uchun)
 
 session = AiohttpSession(timeout=60)
 bot = Bot(token=TOKEN, session=session)
@@ -43,7 +44,8 @@ def init_db():
             bio TEXT,
             photo TEXT,
             vip_expires TIMESTAMP,
-            last_viewed_id INTEGER
+            last_viewed_id INTEGER,
+            status TEXT DEFAULT 'pending'
         )
     ''')
     cursor.execute('''
@@ -52,12 +54,17 @@ def init_db():
             target_id INTEGER
         )
     ''')
+    # Mavjud jadvalga ustunlar yetishmasa qo'shib ketamiz
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN last_viewed_id INTEGER")
     except Exception:
         pass
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN vip_expires TIMESTAMP")
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'pending'")
     except Exception:
         pass
     conn.commit()
@@ -81,12 +88,19 @@ def get_main_keyboard():
 async def cmd_start(message: types.Message, state: FSMContext):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (message.from_user.id,))
+    cursor.execute("SELECT status FROM users WHERE user_id = ?", (message.from_user.id,))
     user = cursor.fetchone()
     conn.close()
     
     if user:
-        await message.answer("Siz ro'yxatdan o'tgansiz! Quyidagi tugmalardan birini tanlang:", reply_markup=get_main_keyboard())
+        status = user[0]
+        if status == 'approved':
+            await message.answer("Siz ro'yxatdan o'tgansiz! Quyidagi tugmalardan birini tanlang:", reply_markup=get_main_keyboard())
+        elif status == 'pending':
+            await message.answer("⏳ Sizning anketangiz admin moderatsiyasidan o'tishini kutmoqda. Iltimos, kuting.")
+        else:
+            await message.answer("❌ Anketangiz rad etilgan. Qaytadan boshlash uchun /start ni bosing.")
+            state.clear()
     else:
         builder = InlineKeyboardBuilder()
         builder.button(text="❌ Bekor qilish", callback_data="cancel_reg")
@@ -98,7 +112,7 @@ async def show_my_profile(message: types.Message):
     user_id = message.from_user.id
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT name, age, city, gender, bio, photo, vip_expires FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT name, age, city, gender, bio, photo, vip_expires, status FROM users WHERE user_id = ?", (user_id,))
     user = cursor.fetchone()
     conn.close()
     
@@ -106,8 +120,12 @@ async def show_my_profile(message: types.Message):
         await message.answer("Siz hali anketa to'ldirmagansiz. /start ni bosing.")
         return
         
-    name, age, city, gender, bio, photo, vip_expires = user
+    name, age, city, gender, bio, photo, vip_expires, status = user
     
+    if status == 'pending':
+        await message.answer("⏳ Anketangiz hozirda admin tomonidan tekshirilmoqda.")
+        return
+
     vip_status = "❌ Yo'q"
     if vip_expires:
         try:
@@ -233,15 +251,61 @@ async def process_bio(message: types.Message, state: FSMContext):
     
     conn = get_db()
     cursor = conn.cursor()
+    # Statusni 'pending' (tasdiq kutyapti) qilib saqlaymiz
     cursor.execute('''
-        INSERT OR REPLACE INTO users (user_id, name, age, city, gender, bio, photo)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO users (user_id, name, age, city, gender, bio, photo, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
     ''', (user_id, data['name'], data['age'], data['city'], data['gender'], message.text, data['photo']))
     conn.commit()
     conn.close()
     
-    await message.answer("✅ Anketangiz muvaffaqiyatli saqlandi!", reply_markup=get_main_keyboard())
+    await message.answer("✅ Anketangiz adminga yuborildi! Moderatsiyadan o'tgach faollashadi.", reply_markup=types.ReplyKeyboardRemove())
     await state.clear()
+
+    # Admin'ga moderatsiya uchun yuborish
+    if ADMIN_ID:
+        admin_kb = InlineKeyboardBuilder()
+        admin_kb.button(text="✅ Tasdiqlash", callback_data=f"adm_yes_{user_id}")
+        admin_kb.button(text="❌ Rad etish", callback_data=f"adm_no_{user_id}")
+        admin_kb.adjust(2)
+        
+        caption = (
+            f"🔔 **Yangi anketa tekshiruv uchun keldi!**\n\n"
+            f"👤 {data['name']}, {data['age']} yosh, {data['city']} 📍\n"
+            f"{data['gender']}\n\n"
+            f"📝 {message.text}"
+        )
+        try:
+            await bot.send_photo(chat_id=ADMIN_ID, photo=data['photo'], caption=caption, reply_markup=admin_kb.as_markup(), parse_mode="Markdown")
+        except Exception:
+            pass
+
+# Admin qarori uchun handler
+@dp.callback_query(F.data.startswith("adm_"))
+async def admin_decision(callback: types.CallbackQuery):
+    action, target_user_id = callback.data.split("_")[1], int(callback.data.split("_")[2])
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    if action == "yes":
+        cursor.execute("UPDATE users SET status = 'approved' WHERE user_id = ?", (target_user_id,))
+        conn.commit()
+        conn.close()
+        await callback.message.edit_caption(caption=callback.message.caption + "\n\n✅ **HOLAT: Tasdiqlandi**", parse_mode="Markdown")
+        try:
+            await bot.send_message(target_user_id, "🎉 Anketangiz admin tomonidan tasdiqlandi! Endi qidiruvdan foydalanishingiz mumkin:", reply_markup=get_main_keyboard())
+        except Exception:
+            pass
+    else:
+        cursor.execute("DELETE FROM users WHERE user_id = ?", (target_user_id,))
+        conn.commit()
+        conn.close()
+        await callback.message.edit_caption(caption=callback.message.caption + "\n\n❌ **HOLAT: Rad etildi va o'chirildi**", parse_mode="Markdown")
+        try:
+            await bot.send_message(target_user_id, "❌ Afsuski, anketangiz talablarga javob bermagani uchun rad etildi. /start orqali qaytadan urinib ko'rishingiz mumkin.")
+        except Exception:
+            pass
+    await callback.answer("Bajarildi!")
 
 # --- VIP obuna va Payme to'lov qismi ---
 @dp.message(F.text == "👑 VIP status olish")
@@ -330,7 +394,7 @@ async def show_who_liked_me(message: types.Message):
         SELECT u.user_id, u.name, u.age, u.city, u.gender, u.bio, u.photo
         FROM likes l
         JOIN users u ON l.user_id = u.user_id
-        WHERE l.target_id = ?
+        WHERE l.target_id = ? AND u.status = 'approved'
         ORDER BY l.rowid DESC LIMIT 1
     """, (user_id,))
     fan = cursor.fetchone()
@@ -367,37 +431,39 @@ async def search_profiles(message: types.Message):
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT gender, city FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT gender, city FROM users WHERE user_id = ? AND status = 'approved'", (user_id,))
     my_profile = cursor.fetchone()
 
     if not my_profile:
         conn.close()
-        await message.answer("Oldin o'z anketangizni to'ldirishingiz kerak. /start ni bosing.")
+        await message.answer("Sizning anketangiz hali tasdiqlanmagan yoki mavjud emas.")
         return
 
     my_gender, my_city = my_profile
     target_gender = "Ayol 🚺" if my_gender == "Erkak 🚹" else "Erkak 🚹"
 
+    # Avval aynan bir shahrdagilarni qidirib ko'ramiz
     cursor.execute("""
         SELECT user_id, name, age, city, gender, bio, photo
         FROM users
-        WHERE user_id != ? AND gender = ?
+        WHERE user_id != ? AND gender = ? AND city = ? AND status = 'approved'
         ORDER BY RANDOM() LIMIT 1
-    """, (user_id, target_gender))
+    """, (user_id, target_gender, my_city))
     candidate = cursor.fetchone()
 
+    # Agar o'sha shahardan topilmasa, istalgan shahrdagisini chiqaramiz
     if not candidate:
         cursor.execute("""
             SELECT user_id, name, age, city, gender, bio, photo
             FROM users
-            WHERE user_id != ?
+            WHERE user_id != ? AND gender = ? AND status = 'approved'
             ORDER BY RANDOM() LIMIT 1
-        """, (user_id,))
+        """, (user_id, target_gender))
         candidate = cursor.fetchone()
 
     if not candidate:
         conn.close()
-        await message.answer("Hozircha bazada boshqa anketalar yo'q. 😔")
+        await message.answer("Hozircha mos keladigan boshqa anketalar yo'q. 😔")
         return
 
     cand_id, name, age, city, gender, bio, photo = candidate
