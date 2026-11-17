@@ -3,15 +3,17 @@ from aiohttp import web
 import logging
 import sqlite3
 import asyncio
+import base64
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.client.bot import DefaultBotProperties
 
 TOKEN = "8938707382:AAGA_7nLTPwpkXA7_kcg0cbIo2gnAy7-QFQ"
+PAYME_MERCHANT_ID = "SIZNING_PAYME_MERCHANT_ID"  # Payme Business dan beriladigan ID ni shu yerga yozasiz
 
 # Tarmoq uzilishlari va timeout oldini olish uchun sessiyani sozlaymiz
 session = AiohttpSession(timeout=60)
@@ -29,6 +31,42 @@ class ProfileStates(StatesGroup):
 def get_db():
     return sqlite3.connect("dating_bot.db")
 
+# --- Bazani avtomatik yaratish va yangilash funksiyasi ---
+def init_db():
+    conn = sqlite3.connect("dating_bot.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            name TEXT,
+            age INTEGER,
+            city TEXT,
+            gender TEXT,
+            bio TEXT,
+            photo TEXT,
+            vip_expires TIMESTAMP
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS likes (
+            user_id INTEGER,
+            target_id INTEGER
+        )
+    ''')
+    # Agar bazada last_viewed_id yoki vip_expires ustunlari bo'lmasa, qo'shib ketamiz
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN last_viewed_id INTEGER")
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN vip_expires TIMESTAMP")
+    except Exception:
+        pass
+    conn.commit()
+    conn.close()
+
+init_db()
+
 # /start buyrug'i
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -42,7 +80,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
         keyboard = types.ReplyKeyboardMarkup(
             keyboard=[
                 [types.KeyboardButton(text="🔍 Anketalarni qidirish")],
-                [types.KeyboardButton(text="👤 Mening anketam"), types.KeyboardButton(text="🗑 Anketani o'chirish")]
+                [types.KeyboardButton(text="👤 Mening anketam"), types.KeyboardButton(text="🗑 Anketani o'chirish")],
+                [types.KeyboardButton(text="👑 VIP status olish")]
             ],
             resize_keyboard=True
         )
@@ -60,7 +99,7 @@ async def show_my_profile(message: types.Message):
     user_id = message.from_user.id
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT name, age, city, gender, bio, photo FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT name, age, city, gender, bio, photo, vip_expires FROM users WHERE user_id = ?", (user_id,))
     user = cursor.fetchone()
     conn.close()
     
@@ -68,8 +107,18 @@ async def show_my_profile(message: types.Message):
         await message.answer("Siz hali anketa to'ldirmagansiz. /start ni bosing.")
         return
         
-    name, age, city, gender, bio, photo = user
-    caption = f"Sizning anketangiz:\n\n👤 {name}, {age}, {city} 📍\n{gender}\n\n📝 {bio}"
+    name, age, city, gender, bio, photo, vip_expires = user
+    
+    vip_status = "❌ Yo'q"
+    if vip_expires:
+        try:
+            exp_date = datetime.strptime(vip_expires, "%Y-%m-%d %H:%M:%S")
+            if exp_date > datetime.now():
+                vip_status = f"✅ Faol ({exp_date.strftime('%d.%m.%Y')} gacha)"
+        except Exception:
+            pass
+
+    caption = f"Sizning anketangiz:\n\n👤 {name}, {age}, {city} 📍\n{gender}\n\n📝 {bio}\n\n👑 VIP status: {vip_status}"
     
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ Anketani tahrirlash", callback_data="edit_profile")
@@ -198,24 +247,64 @@ async def process_bio(message: types.Message, state: FSMContext):
     keyboard = types.ReplyKeyboardMarkup(
         keyboard=[
             [types.KeyboardButton(text="🔍 Anketalarni qidirish")],
-            [types.KeyboardButton(text="👤 Mening anketam"), types.KeyboardButton(text="🗑 Anketani o'chirish")]
+            [types.KeyboardButton(text="👤 Mening anketam"), types.KeyboardButton(text="🗑 Anketani o'chirish")],
+            [types.KeyboardButton(text="👑 VIP status olish")]
         ],
         resize_keyboard=True
     )
     await message.answer("✅ Anketangiz muvaffaqiyatli saqlandi!", reply_markup=keyboard)
     await state.clear()
 
-# --- Qidirish menyusi klaviaturasi ---
-search_keyboard = types.ReplyKeyboardMarkup(
-    keyboard=[
-        [types.KeyboardButton(text="❤️ Yoqdi"), types.KeyboardButton(text="👎 Yoqmadi")],
-        [types.KeyboardButton(text="🔙 Orqaga")]
-    ],
-    resize_keyboard=True
-)
+# --- VIP obuna va Payme to'lov qismi ---
+@dp.message(F.text == "👑 VIP status olish")
+async def cmd_vip(message: types.Message):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💎 10 kun — 15,000 UZS", callback_data="buy_vip_10")
+    builder.button(text="💎 20 kun — 30,000 UZS", callback_data="buy_vip_20")
+    builder.button(text="💎 30 kun — 40,000 UZS", callback_data="buy_vip_30")
+    builder.adjust(1)
+    
+    text = (
+        "👑 **VIP status imkoniyatlari:**\n\n"
+        "• Profilingiz tezroq tavsiya etiladi\n"
+        "• Cheksiz qidiruv imkoniyati\n\n"
+        "O'zingizga mos tarifni tanlang va Payme orqali to'lang:"
+    )
+    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
+@dp.callback_query(F.data.startswith("buy_vip_"))
+async def process_buy_vip(callback: types.CallbackQuery):
+    days_map = {
+        "buy_vip_10": (10, 1500000, "10 kunlik VIP"),
+        "buy_vip_20": (20, 3000000, "20 kunlik VIP"),
+        "buy_vip_30": (30, 4000000, "30 kunlik VIP")
+    }
+    
+    data_key = callback.data
+    if data_key not in days_map:
+        return
+        
+    days, amount_tiyin, title = days_map[data_key]
+    user_id = callback.from_user.id
+    
+    # Payme to'lov havolasini generatsiya qilish
+    raw_data = f"m={PAYME_MERCHANT_ID};ac.user_id={user_id};ac.days={days};a={amount_tiyin}"
+    encoded_data = base64.b64encode(raw_data.encode("utf-8")).decode("utf-8")
+    payme_link = f"https://checkout.payme.uz/{encoded_data}"
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💳 Payme orqali to'lash", url=payme_link)
+    
+    await callback.message.answer(
+        f"💳 **{title}** uchun to'lov havolasi tayyor!\n\n"
+        f"Summa: **{amount_tiyin // 100} UZS**\n\n"
+        f"Tugmani bosing va to'lovni amalga oshiring. To'lov tasdiqlangandan so'ng VIP avtomatik yoqiladi.",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
 
-
+# --- Qidirish menyusi ---
 @dp.message(F.text == "🔍 Anketalarni qidirish")
 @dp.message(Command("search"))
 async def start_search_cmd(message: types.Message):
@@ -228,16 +317,11 @@ async def start_search_cmd(message: types.Message):
     )
     await message.answer("🔍 Qidiruv boshlandi:", reply_markup=reply_kb)
     await search_profiles(message)
+
 async def search_profiles(message: types.Message):
     user_id = message.from_user.id
     conn = get_db()
     cursor = conn.cursor()
-
-    try:
-        cursor.execute("ALTER TABLE users ADD COLUMN last_viewed_id INTEGER")
-        conn.commit()
-    except Exception:
-        pass
 
     cursor.execute("SELECT gender, city FROM users WHERE user_id = ?", (user_id,))
     my_profile = cursor.fetchone()
@@ -285,12 +369,6 @@ async def search_profiles(message: types.Message):
 
     await message.answer_photo(photo=photo, caption=caption, reply_markup=inline_kb.as_markup())
 
-        
-   
-    
-
-
-
 # --- Anketa ostidagi havola tugmasi bosilganda ---
 @dp.callback_query(F.data.startswith("chat_link_"))
 async def process_chat_link_alert(callback: types.CallbackQuery):
@@ -326,8 +404,7 @@ async def process_heart_like(message: types.Message, bot: Bot):
         match_text = (
             "<b>🔥 Match!</b>\n\n"
             "❤️ <b>Siz bir-biringizga yoqdingiz</b>\n\n"
-            "⚠️ <i>Eslatma: administratsiya foydalanuvchilarning keyingi harakatlari uchun javobgar emas. "
-            "Bot faqat tanishuv va nikoh maqsadida yaratilgan.</i>"
+            "⚠️ <i>Eslatma: administratsiya foydalanuvchilarning keyingi harakatlari uchun javobgar emas.</i>"
         )
         builder_my = InlineKeyboardBuilder()
         builder_my.button(text="👤 Profil", url=f"tg://user?id={target_id}")
@@ -348,37 +425,36 @@ async def process_heart_like(message: types.Message, bot: Bot):
 async def process_thumb_dislike(message: types.Message):
     await search_profiles(message)
 
-    
-    
-        
-       
-
-
-
-   
-
-
- 
-
-
 # --- "🔙 Orqaga" bosilganda ---
 @dp.message(F.text == "🔙 Orqaga")
 async def process_back_text(message: types.Message):
     keyboard = types.ReplyKeyboardMarkup(
         keyboard=[
             [types.KeyboardButton(text="🔍 Anketalarni qidirish")],
-            [types.KeyboardButton(text="👤 Mening anketam"), types.KeyboardButton(text="🗑 Anketani o'chirish")]
+            [types.KeyboardButton(text="👤 Mening anketam"), types.KeyboardButton(text="🗑 Anketani o'chirish")],
+            [types.KeyboardButton(text="👑 VIP status olish")]
         ],
         resize_keyboard=True
     )
     await message.answer("Asosiy menyu:", reply_markup=keyboard)
 
-# --- Render uchun mini web-server ---
+# --- Render uchun mini web-server va Payme Webhook qabul qilish punkti ---
 async def handle(request):
     return web.Response(text="Bot is running!")
 
+# Payme to'lov muvaffaqiyatli yakunlangach serverga xabar yuboradi (Webhook)
+async def payme_webhook(request):
+    try:
+        data = await request.json()
+        # Payme so'rovlarini qayta ishlash logikasi shu yerda bo'ladi
+        # To'lov tasdiqlangach bazadan user_id ga kunlarni qo'shish kodi yoziladi
+        return web.json_response({"result": {"status": 1}})
+    except Exception as e:
+        return web.json_response({"error": str(e)})
+
 app = web.Application()
 app.router.add_get("/", handle)
+app.router.add_post("/payme", payme_webhook)
 
 async def web_server():
     runner = web.AppRunner(app)
@@ -387,46 +463,10 @@ async def web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-
-
-# --- Bazani avtomatik yaratish funksiyasi ---
-def init_db():
-    conn = sqlite3.connect("dating_bot.db")
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            name TEXT,
-            age INTEGER,
-            city TEXT,
-            gender TEXT,
-            bio TEXT,
-            photo TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS likes (
-            user_id INTEGER,
-            target_id INTEGER
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-# Bot ishga tushishidan oldin bazani yaratib qo'yamiz
-init_db()
-
-
-
-
 # --- Asosiy ishga tushirish funksiyasi ---
 async def main():
-    # 1. Web-serverni ishga tushiramiz (Render port talabini qondirish uchun)
     await web_server()
-    print("Web-server muvaffaqiyatli ishga tushdi...")
-    
-    # 2. Telegram botni ishga tushiramiz
-    print("Bot muvaffaqiyatli ishga tushdi...")
+    print("Web-server va bot muvaffaqiyatli ishga tushdi...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
