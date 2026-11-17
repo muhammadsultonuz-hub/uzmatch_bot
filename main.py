@@ -54,7 +54,6 @@ def init_db():
             target_id INTEGER
         )
     ''')
-    # Mavjud jadvalga ustunlar yetishmasa qo'shib ketamiz
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN last_viewed_id INTEGER")
     except Exception:
@@ -88,19 +87,12 @@ def get_main_keyboard():
 async def cmd_start(message: types.Message, state: FSMContext):
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT status FROM users WHERE user_id = ?", (message.from_user.id,))
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (message.from_user.id,))
     user = cursor.fetchone()
     conn.close()
     
     if user:
-        status = user[0]
-        if status == 'approved':
-            await message.answer("Siz ro'yxatdan o'tgansiz! Quyidagi tugmalardan birini tanlang:", reply_markup=get_main_keyboard())
-        elif status == 'pending':
-            await message.answer("⏳ Sizning anketangiz admin moderatsiyasidan o'tishini kutmoqda. Iltimos, kuting.")
-        else:
-            await message.answer("❌ Anketangiz rad etilgan. Qaytadan boshlash uchun /start ni bosing.")
-            state.clear()
+        await message.answer("Siz ro'yxatdan o'tgansiz! Quyidagi tugmalardan birini tanlang:", reply_markup=get_main_keyboard())
     else:
         builder = InlineKeyboardBuilder()
         builder.button(text="❌ Bekor qilish", callback_data="cancel_reg")
@@ -122,9 +114,7 @@ async def show_my_profile(message: types.Message):
         
     name, age, city, gender, bio, photo, vip_expires, status = user
     
-    if status == 'pending':
-        await message.answer("⏳ Anketangiz hozirda admin tomonidan tekshirilmoqda.")
-        return
+    status_text = "⏳ Tekshiruvda" if status == 'pending' else ("✅ Tasdiqlangan" if status == 'approved' else "❌ Rad etilgan")
 
     vip_status = "❌ Yo'q"
     if vip_expires:
@@ -135,7 +125,7 @@ async def show_my_profile(message: types.Message):
         except Exception:
             pass
 
-    caption = f"Sizning anketangiz:\n\n👤 {name}, {age}, {city} 📍\n{gender}\n\n📝 {bio}\n\n👑 VIP status: {vip_status}"
+    caption = f"Sizning anketangiz:\n\n👤 {name}, {age}, {city} 📍\n{gender}\n\n📝 {bio}\n\n📌 Holati: {status_text}\n👑 VIP status: {vip_status}"
     
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ Anketani tahrirlash", callback_data="edit_profile")
@@ -251,7 +241,6 @@ async def process_bio(message: types.Message, state: FSMContext):
     
     conn = get_db()
     cursor = conn.cursor()
-    # Statusni 'pending' (tasdiq kutyapti) qilib saqlaymiz
     cursor.execute('''
         INSERT OR REPLACE INTO users (user_id, name, age, city, gender, bio, photo, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
@@ -259,7 +248,8 @@ async def process_bio(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
     
-    await message.answer("✅ Anketangiz adminga yuborildi! Moderatsiyadan o'tgach faollashadi.", reply_markup=types.ReplyKeyboardRemove())
+    # Foydalanuvchiga darhol menyuni chiqaramiz va botdan foydalanishiga ruxsat beramiz
+    await message.answer("✅ Anketangiz saqlandi va tekshiruv uchun adminga yuborildi!\n\nSiz hozircha botdan foydalanib turishingiz mumkin:", reply_markup=get_main_keyboard())
     await state.clear()
 
     # Admin'ga moderatsiya uchun yuborish
@@ -293,7 +283,7 @@ async def admin_decision(callback: types.CallbackQuery):
         conn.close()
         await callback.message.edit_caption(caption=callback.message.caption + "\n\n✅ **HOLAT: Tasdiqlandi**", parse_mode="Markdown")
         try:
-            await bot.send_message(target_user_id, "🎉 Anketangiz admin tomonidan tasdiqlandi! Endi qidiruvdan foydalanishingiz mumkin:", reply_markup=get_main_keyboard())
+            await bot.send_message(target_user_id, "🎉 Tabriklaymiz! Anketangiz admin tomonidan tasdiqlandi va umumiy qidiruvga qo'shildi.")
         except Exception:
             pass
     else:
@@ -359,7 +349,7 @@ async def process_buy_vip(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-# --- Meni yoqtirganlar bo'limi ---
+# --- Meni yoqtirganlar bo'limi (Anketa tasdiqlanmagan bo'lsa ham ishlaydi) ---
 @dp.message(F.text == "❤️ Meni yoqtirganlar")
 async def show_who_liked_me(message: types.Message):
     user_id = message.from_user.id
@@ -390,11 +380,12 @@ async def show_who_liked_me(message: types.Message):
         )
         return
 
+    # Statusidan qat'i nazar unga layk bosganlarni ko'rsatamiz
     cursor.execute("""
         SELECT u.user_id, u.name, u.age, u.city, u.gender, u.bio, u.photo
         FROM likes l
         JOIN users u ON l.user_id = u.user_id
-        WHERE l.target_id = ? AND u.status = 'approved'
+        WHERE l.target_id = ?
         ORDER BY l.rowid DESC LIMIT 1
     """, (user_id,))
     fan = cursor.fetchone()
@@ -412,7 +403,7 @@ async def show_who_liked_me(message: types.Message):
 
     await message.answer_photo(photo=photo, caption=caption, reply_markup=inline_kb.as_markup(), parse_mode="Markdown")
 
-# --- Qidirish menyusi ---
+# --- Qidirish menyusi (Shahri bo'yicha filtr bilan) ---
 @dp.message(F.text == "🔍 Anketalarni qidirish")
 @dp.message(Command("search"))
 async def start_search_cmd(message: types.Message):
@@ -431,18 +422,18 @@ async def search_profiles(message: types.Message):
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT gender, city FROM users WHERE user_id = ? AND status = 'approved'", (user_id,))
+    cursor.execute("SELECT gender, city FROM users WHERE user_id = ?", (user_id,))
     my_profile = cursor.fetchone()
 
     if not my_profile:
         conn.close()
-        await message.answer("Sizning anketangiz hali tasdiqlanmagan yoki mavjud emas.")
+        await message.answer("Oldin o'z anketangizni to'ldirishingiz kerak. /start ni bosing.")
         return
 
     my_gender, my_city = my_profile
     target_gender = "Ayol 🚺" if my_gender == "Erkak 🚹" else "Erkak 🚹"
 
-    # Avval aynan bir shahrdagilarni qidirib ko'ramiz
+    # 1. Avval faqat TASDIQLANGAN ('approved') va bir xil shahrdagi foydalanuvchilarni qidiramiz
     cursor.execute("""
         SELECT user_id, name, age, city, gender, bio, photo
         FROM users
@@ -451,7 +442,7 @@ async def search_profiles(message: types.Message):
     """, (user_id, target_gender, my_city))
     candidate = cursor.fetchone()
 
-    # Agar o'sha shahardan topilmasa, istalgan shahrdagisini chiqaramiz
+    # 2. Agar o'sha shahardan topilmasa, boshqa shahrlardagi tasdiqlanganlarini chiqaramiz
     if not candidate:
         cursor.execute("""
             SELECT user_id, name, age, city, gender, bio, photo
