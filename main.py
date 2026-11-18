@@ -13,7 +13,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import LabeledPrice, PreCheckoutQuery
 from aiogram.client.session.aiohttp import AiohttpSession
 
-TOKEN = "8938707382:AAHz_kGQo5F_IjT07J1QHtFYUQTIHdfn7-Y"
+TOKEN = "8938707382:AAHz_kGQo5F_IjTO7JlQHtfYUQTlhdfn7-Y"
 PAYME_MERCHANT_ID = "SIZNING_PAYME_MERCHANT_ID"
 ADMIN_ID = 5985235760
 
