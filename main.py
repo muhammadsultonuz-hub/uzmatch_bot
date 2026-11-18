@@ -4,17 +4,18 @@ import logging
 import sqlite3
 import asyncio
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import LabeledPrice, PreCheckoutQuery
 from aiogram.client.session.aiohttp import AiohttpSession
 
-TOKEN = "8938707382:AAHz_kGQo5F_IjTO7JlQHtfYUQTlhdfn7-Y"
-PAYME_MERCHANT_ID = "SIZNING_PAYME_MERCHANT_ID"  # Hisob raqam tayyor bo'lgach haqiqiy ID yoziladi
-ADMIN_ID = 5985235760  # O'zingizning Telegram ID raqamingizni yozing (Admin uchun)
+TOKEN = "8938707382:AAHz_kGQo5F_IjT07J1QHtFYUQTIHdfn7-Y"
+PAYME_MERCHANT_ID = "SIZNING_PAYME_MERCHANT_ID"
+ADMIN_ID = 5985235760
 
 session = AiohttpSession(timeout=60)
 bot = Bot(token=TOKEN, session=session)
@@ -71,7 +72,6 @@ def init_db():
 
 init_db()
 
-# Asosiy menyu klaviaturasi
 def get_main_keyboard():
     return types.ReplyKeyboardMarkup(
         keyboard=[
@@ -248,11 +248,9 @@ async def process_bio(message: types.Message, state: FSMContext):
     conn.commit()
     conn.close()
     
-    # Foydalanuvchiga darhol menyuni chiqaramiz va botdan foydalanishiga ruxsat beramiz
     await message.answer("✅ Anketangiz saqlandi va tekshiruv uchun adminga yuborildi!\n\nSiz hozircha botdan foydalanib turishingiz mumkin:", reply_markup=get_main_keyboard())
     await state.clear()
 
-    # Admin'ga moderatsiya uchun yuborish
     if ADMIN_ID:
         admin_kb = InlineKeyboardBuilder()
         admin_kb.button(text="✅ Tasdiqlash", callback_data=f"adm_yes_{user_id}")
@@ -270,7 +268,6 @@ async def process_bio(message: types.Message, state: FSMContext):
         except Exception:
             pass
 
-# Admin qarori uchun handler
 @dp.callback_query(F.data.startswith("adm_"))
 async def admin_decision(callback: types.CallbackQuery):
     action, target_user_id = callback.data.split("_")[1], int(callback.data.split("_")[2])
@@ -297,40 +294,108 @@ async def admin_decision(callback: types.CallbackQuery):
             pass
     await callback.answer("Bajarildi!")
 
-# --- VIP obuna va Payme to'lov qismi ---
+# --- VIP obuna va Ikkala to'lov tizimi (Stars va Payme) ---
 @dp.message(F.text == "👑 VIP status olish")
 async def cmd_vip(message: types.Message):
-    await show_vip_tariffs(message)
-
-async def show_vip_tariffs(message: types.Message):
     builder = InlineKeyboardBuilder()
-    builder.button(text="💎 10 kun — 15,000 UZS", callback_data="buy_vip_10")
-    builder.button(text="💎 20 kun — 30,000 UZS", callback_data="buy_vip_20")
-    builder.button(text="💎 30 kun — 40,000 UZS", callback_data="buy_vip_30")
+    builder.button(text="⭐️ Telegram Stars orqali", callback_data="pay_method_stars")
+    builder.button(text="💳 Karta (Payme) orqali", callback_data="pay_method_payme")
     builder.adjust(1)
     
-    text = (
+    await message.answer(
         "👑 **VIP status imkoniyatlari:**\n\n"
         "• Shaxsiy chatlarni ochish\n"
         "• Kimlar sizni yoqtirganini ko'rish\n"
         "• Cheksiz qidiruv imkoniyati\n\n"
-        "O'zingizga mos tarifni tanlang va Payme orqali to'lang:"
+        "To'lov turini tanlang:",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
     )
-    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
-@dp.callback_query(F.data.startswith("buy_vip_"))
-async def process_buy_vip(callback: types.CallbackQuery):
-    days_map = {
-        "buy_vip_10": (10, 1500000, "10 kunlik VIP"),
-        "buy_vip_20": (20, 3000000, "20 kunlik VIP"),
-        "buy_vip_30": (30, 4000000, "30 kunlik VIP")
+@dp.callback_query(F.data == "pay_method_stars")
+async def choose_stars_tariffs(callback: types.CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⭐️ 7 kun — 80 Stars", callback_data="stars_vip_7")
+    builder.button(text="⭐️ 14 kun — 160 Stars", callback_data="stars_vip_14")
+    builder.button(text="⭐️ 30 kun — 300 Stars (Tejamkor)", callback_data="stars_vip_30")
+    builder.button(text="⬅️ Orqaga", callback_data="back_to_pay_methods")
+    builder.adjust(1)
+    
+    await callback.message.edit_text(
+        "⭐️ **Telegram Stars tariflari:**\n\nO'zingizga mos muddatni tanlang:",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "pay_method_payme")
+async def choose_payme_tariffs(callback: types.CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💳 7 kun — 15,000 UZS", callback_data="payme_vip_7")
+    builder.button(text="💳 14 kun — 30,000 UZS", callback_data="payme_vip_14")
+    builder.button(text="💳 30 kun — 45,000 UZS", callback_data="payme_vip_30")
+    builder.button(text="⬅️ Orqaga", callback_data="back_to_pay_methods")
+    builder.adjust(1)
+    
+    await callback.message.edit_text(
+        "💳 **Karta (Payme) tariflari:**\n\nO'zingizga mos muddatni tanlang:",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "back_to_pay_methods")
+async def back_to_pay_methods(callback: types.CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⭐️ Telegram Stars orqali", callback_data="pay_method_stars")
+    builder.button(text="💳 Karta (Payme) orqali", callback_data="pay_method_payme")
+    builder.adjust(1)
+    
+    await callback.message.edit_text(
+        "👑 **VIP status imkoniyatlari:**\n\nTo'lov turini tanlang:",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("stars_vip_"))
+async def send_stars_invoice(callback: types.CallbackQuery):
+    tariffs = {
+        "stars_vip_7": (7, 80, "7 kunlik VIP status"),
+        "stars_vip_14": (14, 160, "14 kunlik VIP status"),
+        "stars_vip_30": (30, 300, "30 kunlik VIP status")
     }
     
-    data_key = callback.data
-    if data_key not in days_map:
+    key = callback.data
+    if key not in tariffs:
         return
         
-    days, amount_tiyin, title = days_map[data_key]
+    days, stars_amount, title = tariffs[key]
+    prices = [LabeledPrice(label=title, amount=stars_amount)]
+    
+    await callback.message.answer_invoice(
+        title=title,
+        description=f"Tanishuv botida {days} kun davomida VIP imkoniyatlardan foydalanish.",
+        prices=prices,
+        provider_token="",
+        payload=f"vip_{days}",
+        currency="XTR"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("payme_vip_"))
+async def send_payme_link(callback: types.CallbackQuery):
+    tariffs = {
+        "payme_vip_7": (7, 1500000, "7 kunlik VIP"),
+        "payme_vip_14": (14, 3000000, "14 kunlik VIP"),
+        "payme_vip_30": (30, 4500000, "30 kunlik VIP")
+    }
+    
+    key = callback.data
+    if key not in tariffs:
+        return
+        
+    days, amount_tiyin, title = tariffs[key]
     user_id = callback.from_user.id
     
     raw_data = f"m={PAYME_MERCHANT_ID};ac.user_id={user_id};ac.days={days};a={amount_tiyin}"
@@ -343,13 +408,52 @@ async def process_buy_vip(callback: types.CallbackQuery):
     await callback.message.answer(
         f"💳 **{title}** uchun to'lov havolasi tayyor!\n\n"
         f"Summa: **{amount_tiyin // 100} UZS**\n\n"
-        f"Tugmani bosing va to'lovni amalga oshiring. To'lov tasdiqlangandan so'ng VIP avtomatik yoqiladi.",
+        f"Tugmani bosing va to'lovni amalga oshiring.",
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )
     await callback.answer()
 
-# --- Meni yoqtirganlar bo'limi (Anketa tasdiqlanmagan bo'lsa ham ishlaydi) ---
+@dp.pre_checkout_query()
+async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    await pre_checkout_query.answer(ok=True)
+
+@dp.message(F.successful_payment)
+async def process_successful_payment(message: types.Message):
+    payload = message.successful_payment.invoice_payload
+    if payload.startswith("vip_"):
+        days = int(payload.split("_")[1])
+        user_id = message.from_user.id
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT vip_expires FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        
+        now = datetime.now()
+        new_expiry = now + timedelta(days=days)
+        
+        if row and row[0]:
+            try:
+                current_expiry = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                if current_expiry > now:
+                    new_expiry = current_expiry + timedelta(days=days)
+            except Exception:
+                pass
+                
+        formatted_expiry = new_expiry.strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("UPDATE users SET vip_expires = ? WHERE user_id = ?", (formatted_expiry, user_id))
+        conn.commit()
+        conn.close()
+        
+        await message.answer(
+            f"🎉 **To'lov muvaffaqiyatli qabul qilindi!**\n\n"
+            f"Sizga **{days} kunlik VIP status** faollashtirildi.\n"
+            f"📅 Amal qilish muddati: **{new_expiry.strftime('%d.%m.%Y %H:%M')}** gacha.",
+            parse_mode="Markdown"
+        )
+
+# --- Meni yoqtirganlar bo'limi ---
 @dp.message(F.text == "❤️ Meni yoqtirganlar")
 async def show_who_liked_me(message: types.Message):
     user_id = message.from_user.id
@@ -380,7 +484,6 @@ async def show_who_liked_me(message: types.Message):
         )
         return
 
-    # Statusidan qat'i nazar unga layk bosganlarni ko'rsatamiz
     cursor.execute("""
         SELECT u.user_id, u.name, u.age, u.city, u.gender, u.bio, u.photo
         FROM likes l
@@ -403,7 +506,21 @@ async def show_who_liked_me(message: types.Message):
 
     await message.answer_photo(photo=photo, caption=caption, reply_markup=inline_kb.as_markup(), parse_mode="Markdown")
 
-# --- Qidirish menyusi (Shahri bo'yicha filtr bilan) ---
+@dp.callback_query(F.data == "buy_vip_menu")
+async def process_buy_vip_menu(callback: types.CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⭐️ Telegram Stars orqali", callback_data="pay_method_stars")
+    builder.button(text="💳 Karta (Payme) orqali", callback_data="pay_method_payme")
+    builder.adjust(1)
+    
+    await callback.message.answer(
+        "👑 **VIP status imkoniyatlari:**\n\nTo'lov turini tanlang:",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+# --- Qidirish menyusi ---
 @dp.message(F.text == "🔍 Anketalarni qidirish")
 @dp.message(Command("search"))
 async def start_search_cmd(message: types.Message):
@@ -433,7 +550,6 @@ async def search_profiles(message: types.Message):
     my_gender, my_city = my_profile
     target_gender = "Ayol 🚺" if my_gender == "Erkak 🚹" else "Erkak 🚹"
 
-    # 1. Avval faqat TASDIQLANGAN ('approved') va bir xil shahrdagi foydalanuvchilarni qidiramiz
     cursor.execute("""
         SELECT user_id, name, age, city, gender, bio, photo
         FROM users
@@ -442,7 +558,6 @@ async def search_profiles(message: types.Message):
     """, (user_id, target_gender, my_city))
     candidate = cursor.fetchone()
 
-    # 2. Agar o'sha shahardan topilmasa, boshqa shahrlardagi tasdiqlanganlarini chiqaramiz
     if not candidate:
         cursor.execute("""
             SELECT user_id, name, age, city, gender, bio, photo
@@ -470,7 +585,6 @@ async def search_profiles(message: types.Message):
 
     await message.answer_photo(photo=photo, caption=caption, reply_markup=inline_kb.as_markup())
 
-# --- Chat tugmasi bosilganda VIP ni tekshirish ---
 @dp.callback_query(F.data.startswith("chat_link_"))
 async def process_chat_link(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -507,13 +621,6 @@ async def process_chat_link(callback: types.CallbackQuery):
             parse_mode="Markdown"
         )
 
-@dp.callback_query(F.data == "buy_vip_menu")
-async def process_buy_vip_menu(callback: types.CallbackQuery):
-    await show_vip_tariffs(callback.message)
-    await callback.answer()
-
-# --- Pastdan "❤️" bosilganda ---
-# --- Pastdan "❤️" bosilganda va O'zaro Match (Juftlik) tekshirish ---
 @dp.message(F.text == "❤️")
 async def process_heart_like(message: types.Message, bot: Bot):
     user_id = message.from_user.id
@@ -530,18 +637,14 @@ async def process_heart_like(message: types.Message, bot: Bot):
         
     target_id = row[0]
     
-    # 1. Agar oldin bu layk bosilmagan bo'lsa, bazaga yozamiz
     cursor.execute("SELECT * FROM likes WHERE user_id = ? AND target_id = ?", (user_id, target_id))
     if not cursor.fetchone():
         cursor.execute("INSERT INTO likes (user_id, target_id) VALUES (?, ?)", (user_id, target_id))
         conn.commit()
 
-    # 2. O'ZARO MATCH (MUTUAL LIKE) TEKSHIRAMIZ:
-    # Qarama-qarshi tomon (target_id) ham oldin bizga (user_id) layk bosganmi?
     cursor.execute("SELECT * FROM likes WHERE user_id = ? AND target_id = ?", (target_id, user_id))
     is_match = cursor.fetchone()
     
-    # Target foydalanuvchining ismini olib qo'yamiz
     cursor.execute("SELECT name FROM users WHERE user_id = ?", (target_id,))
     target_user = cursor.fetchone()
     target_name = target_user[0] if target_user else "Foydalanuvchi"
@@ -549,7 +652,6 @@ async def process_heart_like(message: types.Message, bot: Bot):
     conn.close()
 
     if is_match:
-        # Bepul va o'zaro match chiqdi! Ikkkala tarafga ham xabar beramiz
         match_kb = InlineKeyboardBuilder()
         match_kb.button(text=f"💬 {target_name} bilan chatga o'tish", url=f"tg://user?id={target_id}")
         
@@ -560,14 +662,13 @@ async def process_heart_like(message: types.Message, bot: Bot):
             reply_markup=match_kb.as_markup(),
             parse_mode="Markdown"
         )
-        
-        # Qarshi tomonga ham xabar yuboramiz (agar u bloklamagan bo'lsa)
         try:
-            my_cursor = get_db().cursor()
+            my_conn = get_db()
+            my_cursor = my_conn.cursor()
             my_cursor.execute("SELECT name FROM users WHERE user_id = ?", (user_id,))
             my_row = my_cursor.fetchone()
             my_name = my_row[0] if my_row else "Foydalanuvchi"
-            my_cursor.connection.close()
+            my_conn.close()
             
             back_kb = InlineKeyboardBuilder()
             back_kb.button(text=f"💬 {my_name} bilan chatga o'tish", url=f"tg://user?id={user_id}")
@@ -587,30 +688,19 @@ async def process_heart_like(message: types.Message, bot: Bot):
 
     await search_profiles(message)
 
-# --- Pastdan "👎" bosilganda ---
 @dp.message(F.text == "👎")
 async def process_thumb_dislike(message: types.Message):
     await search_profiles(message)
 
-# --- "🔙 Orqaga" bosilganda ---
 @dp.message(F.text == "🔙 Orqaga")
 async def process_back_text(message: types.Message):
     await message.answer("Asosiy menyu:", reply_markup=get_main_keyboard())
 
-# --- Render uchun mini web-server va Payme Webhook ---
 async def handle(request):
     return web.Response(text="Bot is running!")
 
-async def payme_webhook(request):
-    try:
-        data = await request.json()
-        return web.json_response({"result": {"status": 1}})
-    except Exception as e:
-        return web.json_response({"error": str(e)})
-
 app = web.Application()
 app.router.add_get("/", handle)
-app.router.add_post("/payme", payme_webhook)
 
 async def web_server():
     runner = web.AppRunner(app)
