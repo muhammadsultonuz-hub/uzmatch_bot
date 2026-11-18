@@ -513,6 +513,7 @@ async def process_buy_vip_menu(callback: types.CallbackQuery):
     await callback.answer()
 
 # --- Pastdan "❤️" bosilganda ---
+# --- Pastdan "❤️" bosilganda va O'zaro Match (Juftlik) tekshirish ---
 @dp.message(F.text == "❤️")
 async def process_heart_like(message: types.Message, bot: Bot):
     user_id = message.from_user.id
@@ -529,13 +530,61 @@ async def process_heart_like(message: types.Message, bot: Bot):
         
     target_id = row[0]
     
+    # 1. Agar oldin bu layk bosilmagan bo'lsa, bazaga yozamiz
     cursor.execute("SELECT * FROM likes WHERE user_id = ? AND target_id = ?", (user_id, target_id))
     if not cursor.fetchone():
         cursor.execute("INSERT INTO likes (user_id, target_id) VALUES (?, ?)", (user_id, target_id))
         conn.commit()
+
+    # 2. O'ZARO MATCH (MUTUAL LIKE) TEKSHIRAMIZ:
+    # Qarama-qarshi tomon (target_id) ham oldin bizga (user_id) layk bosganmi?
+    cursor.execute("SELECT * FROM likes WHERE user_id = ? AND target_id = ?", (target_id, user_id))
+    is_match = cursor.fetchone()
+    
+    # Target foydalanuvchining ismini olib qo'yamiz
+    cursor.execute("SELECT name FROM users WHERE user_id = ?", (target_id,))
+    target_user = cursor.fetchone()
+    target_name = target_user[0] if target_user else "Foydalanuvchi"
+    
     conn.close()
 
-    await message.answer("❤️ Yoqtirildi!")
+    if is_match:
+        # Bepul va o'zaro match chiqdi! Ikkkala tarafga ham xabar beramiz
+        match_kb = InlineKeyboardBuilder()
+        match_kb.button(text=f"💬 {target_name} bilan chatga o'tish", url=f"tg://user?id={target_id}")
+        
+        await message.answer(
+            f"🎉 **Ajoyib! O'zaro simpatiya (Match)!**\n\n"
+            f"Sizga va **{target_name}** ga bir-biringiz yoqdingiz ❤️\n"
+            f"Marhamat, bepul bog'laning:",
+            reply_markup=match_kb.as_markup(),
+            parse_mode="Markdown"
+        )
+        
+        # Qarshi tomonga ham xabar yuboramiz (agar u bloklamagan bo'lsa)
+        try:
+            my_cursor = get_db().cursor()
+            my_cursor.execute("SELECT name FROM users WHERE user_id = ?", (user_id,))
+            my_row = my_cursor.fetchone()
+            my_name = my_row[0] if my_row else "Foydalanuvchi"
+            my_cursor.connection.close()
+            
+            back_kb = InlineKeyboardBuilder()
+            back_kb.button(text=f"💬 {my_name} bilan chatga o'tish", url=f"tg://user?id={user_id}")
+            
+            await bot.send_message(
+                target_id,
+                f"🎉 **Ajoyib! O'zaro simpatiya (Match)!**\n\n"
+                f"Siz layk bosgan **{my_name}** ham sizni yoqtirdi ❤️\n"
+                f"Marhamat, bepul bog'laning:",
+                reply_markup=back_kb.as_markup(),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+    else:
+        await message.answer("❤️ Yoqtirildi!")
+
     await search_profiles(message)
 
 # --- Pastdan "👎" bosilganda ---
