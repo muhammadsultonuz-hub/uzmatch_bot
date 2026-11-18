@@ -12,7 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.session.aiohttp import AiohttpSession
 
-TOKEN = "8938707382:AAGA_7nLTPwpkXA7_kcg0cbIo2gnAy7-QFQ"
+TOKEN = "8938707382:AAHz_kGQo5F_IjTO7JlQHtfYUQTlhdfn7-Y"
 PAYME_MERCHANT_ID = "SIZNING_PAYME_MERCHANT_ID"  # Hisob raqam tayyor bo'lgach haqiqiy ID yoziladi
 ADMIN_ID = 5985235760  # O'zingizning Telegram ID raqamingizni yozing (Admin uchun)
 
